@@ -6,9 +6,6 @@ package main
 typedef const struct mosquitto const_mosquitto;
 typedef const struct mosquitto_acl_msg const_mosquitto_acl_msg;
 typedef const char const_char;
-typedef struct {
-	char *note;
-} userdata;
 */
 import "C"
 import (
@@ -27,11 +24,14 @@ var (
 	logFile *os.File
 )
 
+type userdata struct {
+	note string
+}
+
 func initUserdata(opts map[string]string) (unsafe.Pointer, error) {
-	data := (*C.userdata)(C.malloc(C.sizeof_userdata))
-	(*data).note = C.CString("Shwmae")
+	data := userdata{"Shwmae"}
 	// toDo check options
-	return unsafe.Pointer(data), nil
+	return unsafe.Pointer(&data), nil
 }
 
 //export mosquitto_auth_plugin_version
@@ -87,8 +87,8 @@ func mosquitto_auth_acl_check(user_data unsafe.Pointer, access C.int, client *C.
 		return failure
 	}
 
-	data := (*C.userdata)(user_data)
-	logger.Printf("Note: %v\n", C.GoString((*data).note))
+	data := (*userdata)(user_data)
+	logger.Printf("Note: %v\n", data.note)
 
 	gaccess := int(access)
 	topic := C.GoString(msg.topic)
