@@ -9,6 +9,8 @@ typedef const char const_char;
 */
 import "C"
 import (
+	"fmt"
+	"github.com/limaechocharlie/amrest"
 	"log"
 	"os"
 	"unsafe"
@@ -20,17 +22,44 @@ const (
 )
 
 var (
-	logger  *log.Logger
-	logFile *os.File
+	logger       *log.Logger
+	logFile      *os.File
+	requiredOpts = []string{"host", "port", "path", "realm", "cookiename", "application",
+		"client_id", "client_secret", "agent_user", "agent_password"}
 )
 
-type userdata struct {
-	note string
+type userData struct {
+	baseURL     string
+	realm       string
+	cookie      string
+	application string
+	client      amrest.User
+	admin       amrest.User
 }
 
-func initUserdata(opts map[string]string) (unsafe.Pointer, error) {
-	data := userdata{"Shwmae"}
-	// toDo check options
+func addOptPrefix(o string) string {
+	return "openam_" + o
+}
+func initUserData(opts map[string]string) (unsafe.Pointer, error) {
+	var data userData
+	// check all the required options have been supplied
+	for _, o := range requiredOpts {
+		if _, ok := opts[addOptPrefix(o)]; !ok {
+			return nil, fmt.Errorf("Missing opt %s", o)
+		}
+	}
+
+	// copy over user data values
+	data.baseURL = fmt.Sprintf("%s:%s%s", opts[addOptPrefix("host")], opts[addOptPrefix("port")],
+		opts[addOptPrefix("path")])
+	data.realm = opts[addOptPrefix("realm")]
+	data.cookie = opts[addOptPrefix("cookiename")]
+	data.application = opts[addOptPrefix("application")]
+	data.client.Username = opts[addOptPrefix("client_id")]
+	data.client.Password = opts[addOptPrefix("client_secret")]
+	data.admin.Username = opts[addOptPrefix("agent_user")]
+	data.admin.Password = opts[addOptPrefix("agent_password")]
+	logger.Println(data)
 	return unsafe.Pointer(&data), nil
 }
 
@@ -50,12 +79,12 @@ func mosquitto_auth_plugin_init(user_data *unsafe.Pointer, opts *C.struct_mosqui
 	logger = log.New(logFile, "AUTH_PLUGIN: ", log.Ldate|log.Lmicroseconds)
 	logger.Println("Init plugin")
 
-	// extract opts
+	// copy opts from the C world into Go
 	optMap := extractOptions(opts, opt_count)
-	logger.Println(optMap)
-
-	*user_data, err = initUserdata(optMap)
+	// initialise the user data that will be used in subsequent plugin calls
+	*user_data, err = initUserData(optMap)
 	if err != nil {
+		logger.Println("initUserData failed with err:", err)
 		return failure
 	}
 	return success
@@ -87,8 +116,8 @@ func mosquitto_auth_acl_check(user_data unsafe.Pointer, access C.int, client *C.
 		return failure
 	}
 
-	data := (*userdata)(user_data)
-	logger.Printf("Note: %v\n", data.note)
+	data := (*userData)(user_data)
+	logger.Printf("Received user data: %v\n", data)
 
 	gaccess := int(access)
 	topic := C.GoString(msg.topic)

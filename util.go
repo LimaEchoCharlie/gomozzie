@@ -17,7 +17,6 @@ func extractOptions(arrptr *C.struct_mosquitto_opt, length C.int) map[string]str
 	for i = 0; i < length; i++ {
 		c_opt := C.accessArray(arrptr, i)
 		opts[C.GoString(c_opt.key)] = C.GoString(c_opt.value)
-
 	}
 	return opts
 }
