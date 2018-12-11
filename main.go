@@ -22,10 +22,8 @@ const (
 )
 
 var (
-	logger       *log.Logger
-	logFile      *os.File
-	requiredOpts = []string{"host", "port", "path", "realm", "cookiename", "application",
-		"client_id", "client_secret", "agent_user", "agent_password"}
+	logger  *log.Logger
+	logFile *os.File
 )
 
 type userData struct {
@@ -37,28 +35,57 @@ type userData struct {
 	admin       amrest.User
 }
 
-func addOptPrefix(o string) string {
-	return "openam_" + o
+func (u userData) String() string {
+	return fmt.Sprintf("{ baseURL: %s, realm: %s, cookieName: %s, application: %s, client: %s, admin: %s}",
+		u.baseURL, u.realm, u.cookie, u.application, u.client, u.admin)
 }
+
+const (
+	optPrefix = "openam_"
+
+	optHost           = optPrefix + "host"
+	optPort           = optPrefix + "port"
+	optPath           = optPrefix + "path"
+	optRealm          = optPrefix + "realm"
+	optCookie         = optPrefix + "cookiename"
+	optApplication    = optPrefix + "application"
+	optClientUsername = optPrefix + "client_id"
+	optClientPassword = optPrefix + "client_secret"
+	optAgentUsername  = optPrefix + "agent_user"
+	optAgentPassword  = optPrefix + "agent_password"
+)
+
+var requiredOpts = [...]string{
+	optHost,
+	optPort,
+	optPath,
+	optRealm,
+	optCookie,
+	optApplication,
+	optClientUsername,
+	optClientPassword,
+	optAgentUsername,
+	optAgentPassword,
+}
+
 func initUserData(opts map[string]string) (unsafe.Pointer, error) {
 	var data userData
 	// check all the required options have been supplied
 	for _, o := range requiredOpts {
-		if _, ok := opts[addOptPrefix(o)]; !ok {
-			return nil, fmt.Errorf("Missing opt %s", o)
+		if _, ok := opts[o]; !ok {
+			return nil, fmt.Errorf("missing opt %s", o)
 		}
 	}
 
 	// copy over user data values
-	data.baseURL = fmt.Sprintf("%s:%s%s", opts[addOptPrefix("host")], opts[addOptPrefix("port")],
-		opts[addOptPrefix("path")])
-	data.realm = opts[addOptPrefix("realm")]
-	data.cookie = opts[addOptPrefix("cookiename")]
-	data.application = opts[addOptPrefix("application")]
-	data.client.Username = opts[addOptPrefix("client_id")]
-	data.client.Password = opts[addOptPrefix("client_secret")]
-	data.admin.Username = opts[addOptPrefix("agent_user")]
-	data.admin.Password = opts[addOptPrefix("agent_password")]
+	data.baseURL = fmt.Sprintf("%s:%s%s", opts[optHost], opts[optPort], opts[optPath])
+	data.realm = opts[optRealm]
+	data.cookie = opts[optCookie]
+	data.application = opts[optApplication]
+	data.client.Username = opts[optClientUsername]
+	data.client.Password = opts[optClientPassword]
+	data.admin.Username = opts[optAgentUsername]
+	data.admin.Password = opts[optAgentPassword]
 	logger.Println(data)
 	return unsafe.Pointer(&data), nil
 }
