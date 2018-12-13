@@ -27,12 +27,15 @@ var (
 )
 
 type userData struct {
+	// configuration data
 	baseURL     string
 	realm       string
 	cookie      string
 	application string
 	client      amrest.User
 	admin       amrest.User
+	// cache
+	cacheTokenInfo []byte
 }
 
 func (u userData) String() string {
@@ -96,7 +99,7 @@ func mosquitto_auth_plugin_version() C.int {
 }
 
 //export mosquitto_auth_plugin_init
-func mosquitto_auth_plugin_init(user_data *unsafe.Pointer, opts *C.struct_mosquitto_opt, opt_count C.int) C.int {
+func mosquitto_auth_plugin_init(cUserData *unsafe.Pointer, cOpts *C.struct_mosquitto_opt, cOptCount C.int) C.int {
 	var err error
 	logFile, err = os.OpenFile("auth.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -107,9 +110,9 @@ func mosquitto_auth_plugin_init(user_data *unsafe.Pointer, opts *C.struct_mosqui
 	logger.Println("Init plugin")
 
 	// copy opts from the C world into Go
-	optMap := extractOptions(opts, opt_count)
+	optMap := extractOptions(cOpts, cOptCount)
 	// initialise the user data that will be used in subsequent plugin calls
-	*user_data, err = initUserData(optMap)
+	*cUserData, err = initUserData(optMap)
 	if err != nil {
 		logger.Println("initUserData failed with err:", err)
 		return failure
@@ -118,40 +121,51 @@ func mosquitto_auth_plugin_init(user_data *unsafe.Pointer, opts *C.struct_mosqui
 }
 
 //export mosquitto_auth_plugin_cleanup
-func mosquitto_auth_plugin_cleanup(user_data unsafe.Pointer, opts *C.struct_mosquitto_opt, opt_count C.int) C.int {
+func mosquitto_auth_plugin_cleanup(cUserData unsafe.Pointer, cOpts *C.struct_mosquitto_opt, cOptCount C.int) C.int {
 	logger.Println("Enter: Plugin cleanup")
 	return success
 }
 
 //export mosquitto_auth_security_init
-func mosquitto_auth_security_init(user_data unsafe.Pointer, opts *C.struct_mosquitto_opt, opt_count C.int, reload C.bool) C.int {
+func mosquitto_auth_security_init(cUserData unsafe.Pointer, cOpts *C.struct_mosquitto_opt, cOptCount C.int, cReload C.bool) C.int {
 	logger.Println("Enter: security init")
 	return success
 }
 
 //export mosquitto_auth_security_cleanup
-func mosquitto_auth_security_cleanup(user_data unsafe.Pointer, opts *C.struct_mosquitto_opt, opt_count C.int, reload C.bool) C.int {
+func mosquitto_auth_security_cleanup(cUserData unsafe.Pointer, cOpts *C.struct_mosquitto_opt, cOptCount C.int, cReload C.bool) C.int {
 	logger.Println("Enter: security cleanup")
 	return success
 }
 
 //export mosquitto_auth_acl_check
-func mosquitto_auth_acl_check(user_data unsafe.Pointer, access C.int, client *C.const_mosquitto, msg *C.const_mosquitto_acl_msg) C.int {
+func mosquitto_auth_acl_check(cUserData unsafe.Pointer, cAccess C.int, cClient *C.const_mosquitto, cMsg *C.const_mosquitto_acl_msg) C.int {
 	logger.Println("Enter: acl check")
-	if user_data == nil {
-		logger.Println("Missing user_data")
+	if cUserData == nil {
+		logger.Println("Missing cUserData")
 		return failure
 	}
 
-	data := (*userData)(user_data)
-	logger.Printf("Received user data: %v\n", data)
+	data := (*userData)(cUserData)
+	// toDo utility format function for mqtt resource strings
+	topic := "mqtt+topic://" + C.GoString(cMsg.topic)
+	// toDo check token expiry
 
-	gaccess := int(access)
-	topic := C.GoString(msg.topic)
-	payload := C.GoBytes(msg.payload, C.int(msg.payloadlen))
-	qos := int(msg.qos)
-	retain := bool(msg.retain)
-	logger.Printf("a: %d, t: %s, pl: %s, qos: %d, r: %v\n", gaccess, topic, payload, qos, retain)
+	// get SSO token
+	ssoToken, err := amrest.Authenticate(data.baseURL, "root", data.admin, logger)
+	if err != nil {
+		logger.Printf("failed to start a session, %s\n", err)
+		return C.MOSQ_ERR_AUTH
+	}
+	access, err := amrest.PoliciesEvaluate(data.baseURL, data.realm, data.application, data.cookie, ssoToken,
+		data.cacheTokenInfo, []string{topic}, logger)
+	if err != nil {
+		logger.Printf("failed to evaluate policies, %s\n", err)
+		return C.MOSQ_ERR_AUTH
+	}
+	logger.Printf("access %s\n", access)
+	// toDo check access values
+
 	return C.MOSQ_ERR_SUCCESS
 }
 
@@ -160,20 +174,33 @@ func goStringFromConstant(cstr *C.const_char) string {
 }
 
 //export mosquitto_auth_unpwd_check
-func mosquitto_auth_unpwd_check(user_data unsafe.Pointer, client *C.const_mosquitto, username, password *C.const_char) C.int {
+func mosquitto_auth_unpwd_check(cUserData unsafe.Pointer, cClient *C.const_mosquitto, cUsername, cPassword *C.const_char) C.int {
 	logger.Println("Enter: unpwd check")
-	if username == nil || password == nil {
+	if cUsername == nil || cPassword == nil {
 		return C.MOSQ_ERR_AUTH
 	}
 
-	gusername := goStringFromConstant(username)
-	gpassword := goStringFromConstant(password)
-	logger.Printf("u: %s, p: %s\n", gusername, gpassword)
+	data := (*userData)(cUserData)
+	username := goStringFromConstant(cUsername)
+	password := goStringFromConstant(cPassword)
+	logger.Printf("u: %s, p: %s\n", username, password)
+	if username != "_authn_openid_" {
+		logger.Printf("Unsupported authentication, username = %s\n", username)
+		return C.MOSQ_ERR_AUTH
+	}
+	// an OAuth2 ID Token is passed in as the password
+	info, err := amrest.OAuth2IDTokenInfo(data.baseURL, data.realm, data.client, password, logger)
+	if err != nil {
+		logger.Println("OAuth2 ID Token verification failed:", err)
+		return C.MOSQ_ERR_AUTH
+	}
+	data.cacheTokenInfo = info
+	logger.Println("Leave: unpwd check successful")
 	return C.MOSQ_ERR_SUCCESS
 }
 
 //export mosquitto_auth_psk_key_get
-func mosquitto_auth_psk_key_get(user_data unsafe.Pointer, client *C.const_mosquitto, hint, idnetity *C.const_char, key *C.char, max_key_len C.int) C.int {
+func mosquitto_auth_psk_key_get(cUserData unsafe.Pointer, cClient *C.const_mosquitto, cHint, cIdentity *C.const_char, cKey *C.char, cMaxKeyLen C.int) C.int {
 	logger.Println("Enter: psk key get")
 	return C.MOSQ_ERR_SUCCESS
 }
