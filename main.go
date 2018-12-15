@@ -12,10 +12,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/limaechocharlie/amrest"
+	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"unsafe"
 )
 
@@ -30,8 +33,8 @@ const (
 )
 
 var (
-	logger  *log.Logger
-	logFile *os.File
+	logger *log.Logger
+	file   *os.File = nil
 )
 
 type userData struct {
@@ -67,7 +70,8 @@ const (
 	optAgentPassword  = optPrefix + "agent_password"
 	optAgentRealm     = optPrefix + "agent_realm"
 	// optional
-	optUseTLS = optPrefix + "use_tls"
+	optUseTLS  = optPrefix + "use_tls"
+	optLogDest = optPrefix + "log_dest"
 )
 
 var requiredOpts = [...]string{
@@ -84,6 +88,41 @@ var requiredOpts = [...]string{
 	optAgentRealm,
 }
 
+// initLogger initialises the logger depending on the fields in the supplied configuration string
+func initLogger(s string) error {
+	const (
+		destNone   = "none"
+		destFile   = "file"
+		destStdout = "stdout"
+	)
+	settings := strings.Fields(s)
+	loggingType := destStdout
+	if len(settings) > 0 {
+		loggingType = settings[0]
+	}
+
+	var w io.Writer
+	switch loggingType {
+	case destFile:
+		if len(settings) < 2 {
+			return fmt.Errorf("file path missing")
+		}
+		var err error
+		file, err = os.OpenFile(settings[1], os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return err
+		}
+		w = file
+	case destStdout:
+		w = os.Stdout
+	case destNone:
+		w = ioutil.Discard
+	}
+	logger = log.New(w, "AUTH_PLUGIN: ", log.Ldate|log.Lmicroseconds)
+	return nil
+}
+
+// initUserData initialises the data shared between plugin calls
 func initUserData(opts map[string]string) (unsafe.Pointer, error) {
 	var data userData
 	// check all the required options have been supplied
@@ -92,6 +131,11 @@ func initUserData(opts map[string]string) (unsafe.Pointer, error) {
 			return nil, fmt.Errorf("missing opt %s", o)
 		}
 	}
+
+	if err := initLogger(opts[optLogDest]); err != nil {
+		fmt.Printf("error initialising logger, %s", err)
+	}
+	logger.Println("Init plugin")
 
 	// decide on protocol
 	protocol := "http"
@@ -121,14 +165,6 @@ func mosquitto_auth_plugin_version() C.int {
 //export mosquitto_auth_plugin_init
 func mosquitto_auth_plugin_init(cUserData *unsafe.Pointer, cOpts *C.struct_mosquitto_opt, cOptCount C.int) C.int {
 	var err error
-	logFile, err = os.OpenFile("auth.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		panic(err)
-		return failure
-	}
-	logger = log.New(logFile, "AUTH_PLUGIN: ", log.Ldate|log.Lmicroseconds)
-	logger.Println("Init plugin")
-
 	// copy opts from the C world into Go
 	optMap := extractOptions(cOpts, cOptCount)
 	// initialise the user data that will be used in subsequent plugin calls
@@ -143,6 +179,11 @@ func mosquitto_auth_plugin_init(cUserData *unsafe.Pointer, cOpts *C.struct_mosqu
 //export mosquitto_auth_plugin_cleanup
 func mosquitto_auth_plugin_cleanup(cUserData unsafe.Pointer, cOpts *C.struct_mosquitto_opt, cOptCount C.int) C.int {
 	logger.Println("Enter: Plugin cleanup")
+	// close logfile
+	if file != nil {
+		file.Close()
+		file = nil
+	}
 	return success
 }
 
