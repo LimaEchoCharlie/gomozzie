@@ -9,22 +9,22 @@ typedef const char const_char;
 */
 import "C"
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/limaechocharlie/amrest"
 	"log"
+	"net/http"
 	"os"
 	"unsafe"
-	"net/http"
-	"encoding/json"
 )
 
 const (
 	success = 0
 	failure = 1
 
-	aclNone = 0x00
-	aclRead = 0x01
-	aclWrite = 0x02
+	aclNone      = 0x00
+	aclRead      = 0x01
+	aclWrite     = 0x02
 	aclSubscribe = 0x04
 )
 
@@ -41,13 +41,14 @@ type userData struct {
 	application string
 	client      amrest.User
 	admin       amrest.User
+	adminRealm  string
 	// cache
 	cacheTokenInfo []byte
 }
 
 func (u userData) String() string {
-	return fmt.Sprintf("{ baseURL: %s, realm: %s, cookieName: %s, application: %s, client: %s, admin: %s}",
-		u.baseURL, u.realm, u.cookie, u.application, u.client, u.admin)
+	return fmt.Sprintf("{ baseURL: %s, realm: %s, cookieName: %s, application: %s, client: %s, admin: %s, adminRealm: %s}",
+		u.baseURL, u.realm, u.cookie, u.application, u.client, u.admin, u.adminRealm)
 }
 
 const (
@@ -63,6 +64,7 @@ const (
 	optClientPassword = optPrefix + "client_secret"
 	optAgentUsername  = optPrefix + "agent_user"
 	optAgentPassword  = optPrefix + "agent_password"
+	optAgentRealm     = optPrefix + "agent_realm"
 )
 
 var requiredOpts = [...]string{
@@ -76,6 +78,7 @@ var requiredOpts = [...]string{
 	optClientPassword,
 	optAgentUsername,
 	optAgentPassword,
+	optAgentRealm,
 }
 
 func initUserData(opts map[string]string) (unsafe.Pointer, error) {
@@ -96,6 +99,7 @@ func initUserData(opts map[string]string) (unsafe.Pointer, error) {
 	data.client.Password = opts[optClientPassword]
 	data.admin.Username = opts[optAgentUsername]
 	data.admin.Password = opts[optAgentPassword]
+	data.adminRealm = opts[optAgentRealm]
 	logger.Println(data)
 	return unsafe.Pointer(&data), nil
 }
@@ -159,7 +163,7 @@ func mosquitto_auth_acl_check(cUserData unsafe.Pointer, cAccess C.int, cClient *
 	// toDo check token expiry
 
 	// get SSO token
-	authBytes, err := amrest.Authenticate(http.DefaultClient, data.baseURL, "root", data.admin, logger)
+	authBytes, err := amrest.Authenticate(http.DefaultClient, data.baseURL, data.adminRealm, data.admin, logger)
 	if err != nil {
 		logger.Printf("failed to start a session, %s\n", err)
 		return C.MOSQ_ERR_AUTH
