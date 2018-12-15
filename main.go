@@ -14,11 +14,18 @@ import (
 	"log"
 	"os"
 	"unsafe"
+	"net/http"
+	"encoding/json"
 )
 
 const (
 	success = 0
 	failure = 1
+
+	aclNone = 0x00
+	aclRead = 0x01
+	aclWrite = 0x02
+	aclSubscribe = 0x04
 )
 
 var (
@@ -152,20 +159,57 @@ func mosquitto_auth_acl_check(cUserData unsafe.Pointer, cAccess C.int, cClient *
 	// toDo check token expiry
 
 	// get SSO token
-	ssoToken, err := amrest.Authenticate(data.baseURL, "root", data.admin, logger)
+	authBytes, err := amrest.Authenticate(http.DefaultClient, data.baseURL, "root", data.admin, logger)
 	if err != nil {
 		logger.Printf("failed to start a session, %s\n", err)
 		return C.MOSQ_ERR_AUTH
 	}
-	access, err := amrest.PoliciesEvaluate(data.baseURL, data.realm, data.application, data.cookie, ssoToken,
+	authResult := struct {
+		TokenID string `json:"tokenId"`
+	}{}
+	if err := json.Unmarshal(authBytes, &authResult); err != nil {
+		logger.Printf("failed to unmarshal SSO token, %s\n", err)
+		return C.MOSQ_ERR_AUTH
+	}
+	ssoToken := authResult.TokenID
+
+	// evaluate policies
+	evalBytes, err := amrest.PoliciesEvaluate(http.DefaultClient, data.baseURL, data.realm, data.application, data.cookie, ssoToken,
 		data.cacheTokenInfo, []string{topic}, logger)
 	if err != nil {
 		logger.Printf("failed to evaluate policies, %s\n", err)
 		return C.MOSQ_ERR_AUTH
 	}
-	logger.Printf("access %s\n", access)
-	// toDo check access values
+	var evaluation []struct {
+		Actions amrest.Actions
+	}
 
+	if err := json.Unmarshal(evalBytes, &evaluation); err != nil {
+		logger.Printf("failed to unmarhal policies, %s\n", err)
+		return C.MOSQ_ERR_AUTH
+	}
+	if len(evaluation) != 1 {
+		logger.Printf("expected only one resource; got %d\n", len(evaluation))
+		return C.MOSQ_ERR_AUTH
+	}
+	actions := evaluation[0].Actions
+	logger.Printf("actions %s\n", actions)
+
+	var b bool
+	switch a := int(cAccess); a {
+	case aclRead:
+		b = actions["RECEIVE"]
+	case aclWrite:
+		b = actions["PUBLISH"]
+	default:
+		logger.Printf("Unexpected access request %d", a)
+	}
+	if !b {
+		logger.Printf("Access denied")
+		return C.MOSQ_ERR_PLUGIN_DEFER
+	}
+
+	logger.Printf("Access granted")
 	return C.MOSQ_ERR_SUCCESS
 }
 
@@ -189,7 +233,7 @@ func mosquitto_auth_unpwd_check(cUserData unsafe.Pointer, cClient *C.const_mosqu
 		return C.MOSQ_ERR_AUTH
 	}
 	// an OAuth2 ID Token is passed in as the password
-	info, err := amrest.OAuth2IDTokenInfo(data.baseURL, data.realm, data.client, password, logger)
+	info, err := amrest.OAuth2IDTokenInfo(http.DefaultClient, data.baseURL, data.realm, data.client, password, logger)
 	if err != nil {
 		logger.Println("OAuth2 ID Token verification failed:", err)
 		return C.MOSQ_ERR_AUTH
