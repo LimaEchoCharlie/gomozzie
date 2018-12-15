@@ -218,35 +218,33 @@ func mosquitto_auth_acl_check(cUserData unsafe.Pointer, cAccess C.int, cClient *
 		logger.Printf("failed to start a session, %s\n", err)
 		return C.MOSQ_ERR_AUTH
 	}
-	authResult := struct {
-		TokenID string `json:"tokenId"`
-	}{}
-	if err := json.Unmarshal(authBytes, &authResult); err != nil {
+
+	var authResponse amrest.AuthenticateResponse
+	if err := json.Unmarshal(authBytes, &authResponse); err != nil {
 		logger.Printf("failed to unmarshal SSO token, %s\n", err)
 		return C.MOSQ_ERR_AUTH
 	}
-	ssoToken := authResult.TokenID
+	ssoToken := authResponse.TokenID
 
 	// evaluate policies
-	evalBytes, err := amrest.PoliciesEvaluate(http.DefaultClient, data.baseURL, data.realm, data.application, data.cookie, ssoToken,
-		data.cacheTokenInfo, []string{topic}, logger)
+	policies := amrest.NewPolicies([]string{topic}, data.application).AddClaims(data.cacheTokenInfo)
+	evalBytes, err := amrest.PoliciesEvaluate(http.DefaultClient, data.baseURL, data.realm, data.cookie, ssoToken,
+		policies, logger)
 	if err != nil {
 		logger.Printf("failed to evaluate policies, %s\n", err)
 		return C.MOSQ_ERR_AUTH
 	}
-	var evaluation []struct {
-		Actions amrest.Actions
-	}
 
-	if err := json.Unmarshal(evalBytes, &evaluation); err != nil {
+	var evaluations []amrest.PolicyEvaluation
+	if err := json.Unmarshal(evalBytes, &evaluations); err != nil {
 		logger.Printf("failed to unmarhal policies, %s\n", err)
 		return C.MOSQ_ERR_AUTH
 	}
-	if len(evaluation) != 1 {
-		logger.Printf("expected only one resource; got %d\n", len(evaluation))
+	if len(evaluations) != 1 {
+		logger.Printf("expected only one resource; got %d\n", len(evaluations))
 		return C.MOSQ_ERR_AUTH
 	}
-	actions := evaluation[0].Actions
+	actions := evaluations[0].Actions
 	logger.Printf("actions %s\n", actions)
 
 	var b bool
