@@ -15,6 +15,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"unsafe"
 )
 
@@ -65,6 +66,8 @@ const (
 	optAgentUsername  = optPrefix + "agent_user"
 	optAgentPassword  = optPrefix + "agent_password"
 	optAgentRealm     = optPrefix + "agent_realm"
+	// optional
+	optUseTLS = optPrefix + "use_tls"
 )
 
 var requiredOpts = [...]string{
@@ -90,8 +93,14 @@ func initUserData(opts map[string]string) (unsafe.Pointer, error) {
 		}
 	}
 
+	// decide on protocol
+	protocol := "http"
+	if useTLS, err := strconv.ParseBool(opts[optUseTLS]); err == nil && useTLS {
+		protocol = "https"
+	}
+
 	// copy over user data values
-	data.baseURL = fmt.Sprintf("%s:%s%s", opts[optHost], opts[optPort], opts[optPath])
+	data.baseURL = fmt.Sprintf("%s://%s:%s%s", protocol, opts[optHost], opts[optPort], opts[optPath])
 	data.realm = opts[optRealm]
 	data.cookie = opts[optCookie]
 	data.application = opts[optApplication]
