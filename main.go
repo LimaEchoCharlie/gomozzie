@@ -41,7 +41,7 @@ type userData struct {
 	// configuration data
 	baseURL     string
 	realm       string
-	cookie      string
+	cookieName  string
 	application string
 	client      amrest.User
 	admin       amrest.User
@@ -52,7 +52,7 @@ type userData struct {
 
 func (u userData) String() string {
 	return fmt.Sprintf("{ baseURL: %s, realm: %s, cookieName: %s, application: %s, client: %s, admin: %s, adminRealm: %s}",
-		u.baseURL, u.realm, u.cookie, u.application, u.client, u.admin, u.adminRealm)
+		u.baseURL, u.realm, u.cookieName, u.application, u.client, u.admin, u.adminRealm)
 }
 
 const (
@@ -62,7 +62,7 @@ const (
 	optPort           = optPrefix + "port"
 	optPath           = optPrefix + "path"
 	optRealm          = optPrefix + "realm"
-	optCookie         = optPrefix + "cookiename"
+	optCookieName     = optPrefix + "cookiename"
 	optApplication    = optPrefix + "application"
 	optClientUsername = optPrefix + "client_id"
 	optClientPassword = optPrefix + "client_secret"
@@ -79,7 +79,7 @@ var requiredOpts = [...]string{
 	optPort,
 	optPath,
 	optRealm,
-	optCookie,
+	optCookieName,
 	optApplication,
 	optClientUsername,
 	optClientPassword,
@@ -146,7 +146,7 @@ func initUserData(opts map[string]string) (unsafe.Pointer, error) {
 	// copy over user data values
 	data.baseURL = fmt.Sprintf("%s://%s:%s%s", protocol, opts[optHost], opts[optPort], opts[optPath])
 	data.realm = opts[optRealm]
-	data.cookie = opts[optCookie]
+	data.cookieName = opts[optCookieName]
 	data.application = opts[optApplication]
 	data.client.Username = opts[optClientUsername]
 	data.client.Password = opts[optClientPassword]
@@ -213,7 +213,7 @@ func mosquitto_auth_acl_check(cUserData unsafe.Pointer, cAccess C.int, cClient *
 	// toDo check token expiry
 
 	// get SSO token
-	authBytes, err := amrest.Authenticate(http.DefaultClient, data.baseURL, data.adminRealm, data.admin, logger)
+	authBytes, err := amrest.Authenticate(http.DefaultClient, data.baseURL, data.adminRealm, data.admin)
 	if err != nil {
 		logger.Printf("failed to start a session, %s\n", err)
 		return C.MOSQ_ERR_AUTH
@@ -228,8 +228,8 @@ func mosquitto_auth_acl_check(cUserData unsafe.Pointer, cAccess C.int, cClient *
 
 	// evaluate policies
 	policies := amrest.NewPolicies([]string{topic}, data.application).AddClaims(data.cacheTokenInfo)
-	evalBytes, err := amrest.PoliciesEvaluate(http.DefaultClient, data.baseURL, data.realm, data.cookie, ssoToken,
-		policies, logger)
+	evalBytes, err := amrest.PoliciesEvaluate(http.DefaultClient, data.baseURL, data.realm, data.cookieName, ssoToken,
+		policies)
 	if err != nil {
 		logger.Printf("failed to evaluate policies, %s\n", err)
 		return C.MOSQ_ERR_AUTH
@@ -285,7 +285,7 @@ func mosquitto_auth_unpwd_check(cUserData unsafe.Pointer, cClient *C.const_mosqu
 		return C.MOSQ_ERR_AUTH
 	}
 	// an OAuth2 ID Token is passed in as the password
-	info, err := amrest.OAuth2IDTokenInfo(http.DefaultClient, data.baseURL, data.realm, data.client, password, logger)
+	info, err := amrest.OAuth2IDTokenInfo(http.DefaultClient, data.baseURL, data.realm, data.client, password)
 	if err != nil {
 		logger.Println("OAuth2 ID Token verification failed:", err)
 		return C.MOSQ_ERR_AUTH
