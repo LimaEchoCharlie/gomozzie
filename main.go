@@ -23,9 +23,6 @@ import (
 )
 
 const (
-	success = 0
-	failure = 1
-
 	aclNone      = 0x00
 	aclRead      = 0x01
 	aclWrite     = 0x02
@@ -118,7 +115,7 @@ func initLogger(s string) error {
 	case destNone:
 		w = ioutil.Discard
 	}
-	logger = log.New(w, "AUTH_PLUGIN: ", log.Ldate|log.Lmicroseconds)
+	logger = log.New(w, "AUTH_PLUGIN: ", log.LstdFlags|log.Lshortfile)
 	return nil
 }
 
@@ -158,11 +155,18 @@ func initUserData(opts map[string]string) (unsafe.Pointer, error) {
 }
 
 //export mosquitto_auth_plugin_version
+/*
+ * Returns the value of MOSQ_AUTH_PLUGIN_VERSION defined in the mosquitto header file that the plugin was compiled
+ * against.
+ */
 func mosquitto_auth_plugin_version() C.int {
 	return C.MOSQ_AUTH_PLUGIN_VERSION
 }
 
 //export mosquitto_auth_plugin_init
+/*
+ * Initialises the plugin.
+ */
 func mosquitto_auth_plugin_init(cUserData *unsafe.Pointer, cOpts *C.struct_mosquitto_opt, cOptCount C.int) C.int {
 	var err error
 	// copy opts from the C world into Go
@@ -171,40 +175,36 @@ func mosquitto_auth_plugin_init(cUserData *unsafe.Pointer, cOpts *C.struct_mosqu
 	*cUserData, err = initUserData(optMap)
 	if err != nil {
 		logger.Println("initUserData failed with err:", err)
-		return failure
+		return C.MOSQ_ERR_AUTH
 	}
-	return success
+	logger.Println("leave - plugin init successful")
+	return C.MOSQ_ERR_SUCCESS
 }
 
 //export mosquitto_auth_plugin_cleanup
+/*
+ * Cleans up the plugin before the server shuts down.
+ */
 func mosquitto_auth_plugin_cleanup(cUserData unsafe.Pointer, cOpts *C.struct_mosquitto_opt, cOptCount C.int) C.int {
-	logger.Println("Enter: Plugin cleanup")
+	logger.Println("enter - plugin cleanup")
 	// close logfile
 	if file != nil {
 		file.Close()
 		file = nil
 	}
-	return success
-}
-
-//export mosquitto_auth_security_init
-func mosquitto_auth_security_init(cUserData unsafe.Pointer, cOpts *C.struct_mosquitto_opt, cOptCount C.int, cReload C.bool) C.int {
-	logger.Println("Enter: security init")
-	return success
-}
-
-//export mosquitto_auth_security_cleanup
-func mosquitto_auth_security_cleanup(cUserData unsafe.Pointer, cOpts *C.struct_mosquitto_opt, cOptCount C.int, cReload C.bool) C.int {
-	logger.Println("Enter: security cleanup")
-	return success
+	logger.Println("leave - plugin cleanup")
+	return C.MOSQ_ERR_SUCCESS
 }
 
 //export mosquitto_auth_acl_check
+/*
+ * Checks whether a client is authorised to read from or write to a topic.
+ */
 func mosquitto_auth_acl_check(cUserData unsafe.Pointer, cAccess C.int, cClient *C.const_mosquitto, cMsg *C.const_mosquitto_acl_msg) C.int {
-	logger.Println("Enter: acl check")
+	logger.Println("enter - acl check")
 	if cUserData == nil {
 		logger.Println("Missing cUserData")
-		return failure
+		return C.MOSQ_ERR_AUTH
 	}
 
 	data := (*userData)(cUserData)
@@ -254,24 +254,23 @@ func mosquitto_auth_acl_check(cUserData unsafe.Pointer, cAccess C.int, cClient *
 	case aclWrite:
 		b = actions["PUBLISH"]
 	default:
-		logger.Printf("Unexpected access request %d", a)
+		logger.Printf("Unexpected access request %d\n", a)
 	}
 	if !b {
-		logger.Printf("Access denied")
+		logger.Println("leave - acl check access denied")
 		return C.MOSQ_ERR_PLUGIN_DEFER
 	}
 
-	logger.Printf("Access granted")
+	logger.Println("leave - acl check access granted")
 	return C.MOSQ_ERR_SUCCESS
 }
 
-func goStringFromConstant(cstr *C.const_char) string {
-	return C.GoString((*C.char)(cstr))
-}
-
 //export mosquitto_auth_unpwd_check
+/*
+ * Authenticates the client by checking the supplied username and password.
+ */
 func mosquitto_auth_unpwd_check(cUserData unsafe.Pointer, cClient *C.const_mosquitto, cUsername, cPassword *C.const_char) C.int {
-	logger.Println("Enter: unpwd check")
+	logger.Println("enter - unpwd check")
 	if cUsername == nil || cPassword == nil {
 		return C.MOSQ_ERR_AUTH
 	}
@@ -291,13 +290,31 @@ func mosquitto_auth_unpwd_check(cUserData unsafe.Pointer, cClient *C.const_mosqu
 		return C.MOSQ_ERR_AUTH
 	}
 	data.cacheTokenInfo = info
-	logger.Println("Leave: unpwd check successful")
+	logger.Println("leave - unpwd check successful")
+	return C.MOSQ_ERR_SUCCESS
+}
+
+//export mosquitto_auth_security_init
+/*
+ * No-op function. Included to satisfy the plugin contract to Mosquitto.
+ */
+func mosquitto_auth_security_init(cUserData unsafe.Pointer, cOpts *C.struct_mosquitto_opt, cOptCount C.int, cReload C.bool) C.int {
+	return C.MOSQ_ERR_SUCCESS
+}
+
+//export mosquitto_auth_security_cleanup
+/*
+ * No-op function. Included to satisfy the plugin contract to Mosquitto.
+ */
+func mosquitto_auth_security_cleanup(cUserData unsafe.Pointer, cOpts *C.struct_mosquitto_opt, cOptCount C.int, cReload C.bool) C.int {
 	return C.MOSQ_ERR_SUCCESS
 }
 
 //export mosquitto_auth_psk_key_get
+/*
+ * No-op function. Included to satisfy the plugin contract to Mosquitto.
+ */
 func mosquitto_auth_psk_key_get(cUserData unsafe.Pointer, cClient *C.const_mosquitto, cHint, cIdentity *C.const_char, cKey *C.char, cMaxKeyLen C.int) C.int {
-	logger.Println("Enter: psk key get")
 	return C.MOSQ_ERR_SUCCESS
 }
 
