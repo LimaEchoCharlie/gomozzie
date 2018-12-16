@@ -154,6 +154,37 @@ func initUserData(opts map[string]string) (unsafe.Pointer, error) {
 	return unsafe.Pointer(&data), nil
 }
 
+// doer is an interface that represents a http client
+type doer interface {
+	Do(req *http.Request) (*http.Response, error)
+}
+
+// statusCodeError indicate that an unexpected status code has been returned by the server
+type statusCodeError int
+
+func (e statusCodeError) Error() string {
+	return fmt.Sprintf("received status code %d", e)
+}
+
+// doRequest sends a http request, checking that the status is as expected and that the body can be read
+func doRequest( client doer, req *http.Request, expectedStatusCode int) ([]byte, error){
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != expectedStatusCode {
+		return body, statusCodeError(resp.StatusCode)
+	}
+	return body, nil
+}
+
 //export mosquitto_auth_plugin_version
 /*
  * Returns the value of MOSQ_AUTH_PLUGIN_VERSION defined in the mosquitto header file that the plugin was compiled
@@ -213,7 +244,12 @@ func mosquitto_auth_acl_check(cUserData unsafe.Pointer, cAccess C.int, cClient *
 	// toDo check token expiry
 
 	// get SSO token
-	authBytes, err := amrest.Authenticate(http.DefaultClient, data.baseURL, data.adminRealm, data.admin)
+	authRequest, err := amrest.AuthenticateRequest(data.baseURL, data.adminRealm, data.admin)
+	if err != nil {
+		logger.Println("failed to create a authenticate request:", err)
+		return C.MOSQ_ERR_AUTH
+	}
+	authBytes, err := doRequest(http.DefaultClient, authRequest, http.StatusOK)
 	if err != nil {
 		logger.Printf("failed to start a session, %s\n", err)
 		return C.MOSQ_ERR_AUTH
@@ -228,8 +264,12 @@ func mosquitto_auth_acl_check(cUserData unsafe.Pointer, cAccess C.int, cClient *
 
 	// evaluate policies
 	policies := amrest.NewPolicies([]string{topic}, data.application).AddClaims(data.cacheTokenInfo)
-	evalBytes, err := amrest.PoliciesEvaluate(http.DefaultClient, data.baseURL, data.realm, data.cookieName, ssoToken,
-		policies)
+	evalRequest, err := amrest.PoliciesEvaluateRequest(data.baseURL, data.realm, data.cookieName, ssoToken, policies)
+	if err != nil {
+		logger.Println("failed to create a policies evaluate request:", err)
+		return C.MOSQ_ERR_AUTH
+	}
+	evalBytes, err := doRequest(http.DefaultClient, evalRequest, http.StatusOK)
 	if err != nil {
 		logger.Printf("failed to evaluate policies, %s\n", err)
 		return C.MOSQ_ERR_AUTH
@@ -237,7 +277,7 @@ func mosquitto_auth_acl_check(cUserData unsafe.Pointer, cAccess C.int, cClient *
 
 	var evaluations []amrest.PolicyEvaluation
 	if err := json.Unmarshal(evalBytes, &evaluations); err != nil {
-		logger.Printf("failed to unmarhal policies, %s\n", err)
+		logger.Printf("failed to unmarshal policies, %s\n", err)
 		return C.MOSQ_ERR_AUTH
 	}
 	if len(evaluations) != 1 {
@@ -280,11 +320,16 @@ func mosquitto_auth_unpwd_check(cUserData unsafe.Pointer, cClient *C.const_mosqu
 	password := goStringFromConstant(cPassword)
 	logger.Printf("u: %s, p: %s\n", username, password)
 	if username != "_authn_openid_" {
-		logger.Printf("Unsupported authentication, username = %s\n", username)
+		logger.Printf("unsupported authentication, username = %s\n", username)
 		return C.MOSQ_ERR_AUTH
 	}
-	// an OAuth2 ID Token is passed in as the password
-	info, err := amrest.OAuth2IDTokenInfo(http.DefaultClient, data.baseURL, data.realm, data.client, password)
+	// an OAuth2 ID Token is passed in as the password. Check that it is valid.
+	req, err := amrest.OAuth2IDTokenInfoRequest(data.baseURL, data.realm, data.client, password)
+	if err != nil {
+		logger.Println("failed to create a OAuth2 ID Token verification request:", err)
+		return C.MOSQ_ERR_AUTH
+	}
+	info, err := doRequest(http.DefaultClient, req, http.StatusOK)
 	if err != nil {
 		logger.Println("OAuth2 ID Token verification failed:", err)
 		return C.MOSQ_ERR_AUTH
