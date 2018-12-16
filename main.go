@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"unsafe"
+	"time"
 )
 
 const (
@@ -166,23 +167,38 @@ func (e statusCodeError) Error() string {
 	return fmt.Sprintf("received status code %d", e)
 }
 
-// doRequest sends a http request, checking that the status is as expected and that the body can be read
-func doRequest( client doer, req *http.Request, expectedStatusCode int) ([]byte, error){
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
+// doRequest sends a http request, checking the response for the expected status code and the body
+func doRequest( client doer, req *http.Request, expectedStatusCode int) (body []byte, err error) {
+	const (
+		retryLimit = 4
+		backOff    = 100 * time.Millisecond
+	)
+	f := func(client doer, req *http.Request, expectedStatusCode int)([]byte, error) {
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+
+		defer resp.Body.Close()
+		body, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+
+		if resp.StatusCode != expectedStatusCode {
+			return body, statusCodeError(resp.StatusCode)
+		}
+		return body, nil
 	}
 
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
+	for i, b := 0, time.Duration(0); i < retryLimit; i, b = i+1, b+backOff {
+		time.Sleep(b) 	// a zero duration will return immediately
+		body, err = f(client, req , expectedStatusCode)
+		if err == nil {
+			break
+		}
 	}
-
-	if resp.StatusCode != expectedStatusCode {
-		return body, statusCodeError(resp.StatusCode)
-	}
-	return body, nil
+	return body, err
 }
 
 //export mosquitto_auth_plugin_version
