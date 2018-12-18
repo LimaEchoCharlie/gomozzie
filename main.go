@@ -44,8 +44,6 @@ type userData struct {
 	client      amrest.User
 	admin       amrest.User
 	adminRealm  string
-	// cache
-	cacheTokenInfo []byte
 }
 
 func (u userData) String() string {
@@ -85,6 +83,9 @@ var requiredOpts = [...]string{
 	optAgentPassword,
 	optAgentRealm,
 }
+
+// cache to store client data between API calls. The client pointer value is used as the key.
+var clientCache map[unsafe.Pointer][]byte
 
 // initLogger initialises the logger depending on the fields in the supplied configuration string
 func initLogger(s string) error {
@@ -224,6 +225,8 @@ func mosquitto_auth_plugin_init(cUserData *unsafe.Pointer, cOpts *C.struct_mosqu
 		logger.Println("initUserData failed with err:", err)
 		return C.MOSQ_ERR_AUTH
 	}
+	// make client cache
+	clientCache = make(map[unsafe.Pointer][]byte)
 	logger.Println("leave - plugin init successful")
 	return C.MOSQ_ERR_SUCCESS
 }
@@ -239,6 +242,8 @@ func mosquitto_auth_plugin_cleanup(cUserData unsafe.Pointer, cOpts *C.struct_mos
 		file.Close()
 		file = nil
 	}
+	// set the client cache to nil so it can be garage collected
+	clientCache = nil
 	logger.Println("leave - plugin cleanup")
 	return C.MOSQ_ERR_SUCCESS
 }
@@ -255,6 +260,12 @@ func mosquitto_auth_acl_check(cUserData unsafe.Pointer, cAccess C.int, cClient *
 	}
 
 	data := (*userData)(cUserData)
+	// get cache data
+	cacheTokenInfo, ok := clientCache[unsafe.Pointer(cClient)]
+	if !ok {
+		logger.Printf("client %p is missing from cache\n", unsafe.Pointer(cClient))
+		return C.MOSQ_ERR_AUTH
+	}
 	// toDo utility format function for mqtt resource strings
 	topic := "mqtt+topic://" + C.GoString(cMsg.topic)
 	// toDo check token expiry
@@ -279,7 +290,7 @@ func mosquitto_auth_acl_check(cUserData unsafe.Pointer, cAccess C.int, cClient *
 	ssoToken := authResponse.TokenID
 
 	// evaluate policies
-	policies := amrest.NewPolicies([]string{topic}, data.application).AddClaims(data.cacheTokenInfo)
+	policies := amrest.NewPolicies([]string{topic}, data.application).AddClaims(cacheTokenInfo)
 	evalRequest, err := amrest.PoliciesEvaluateRequest(data.baseURL, data.realm, data.cookieName, ssoToken, policies)
 	if err != nil {
 		logger.Println("failed to create a policies evaluate request:", err)
@@ -306,8 +317,10 @@ func mosquitto_auth_acl_check(cUserData unsafe.Pointer, cAccess C.int, cClient *
 	var b bool
 	switch a := int(cAccess); a {
 	case aclRead:
+		logger.Printf("read")
 		b = actions["RECEIVE"]
 	case aclWrite:
+		logger.Printf("write")
 		b = actions["PUBLISH"]
 	default:
 		logger.Printf("Unexpected access request %d\n", a)
@@ -350,7 +363,10 @@ func mosquitto_auth_unpwd_check(cUserData unsafe.Pointer, cClient *C.const_mosqu
 		logger.Println("OAuth2 ID Token verification failed:", err)
 		return C.MOSQ_ERR_AUTH
 	}
-	data.cacheTokenInfo = info
+
+	// add token info to cache
+	clientCache[unsafe.Pointer(cClient)] = info
+
 	logger.Println("leave - unpwd check successful")
 	return C.MOSQ_ERR_SUCCESS
 }
