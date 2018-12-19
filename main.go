@@ -23,11 +23,23 @@ import (
 	"time"
 )
 
+// access describes the type of access to a topic that the client is requesting
+type access int
+
+func (a access) String() string {
+	switch a {
+	case read:
+		return "read"
+	case write:
+		return "write"
+	default:
+		return "unknown"
+	}
+}
+
 const (
-	aclNone      = 0x00
-	aclRead      = 0x01
-	aclWrite     = 0x02
-	aclSubscribe = 0x04
+	read  access = 0x01		// read from a topic
+	write access = 0x02		// write to a topic
 )
 
 var (
@@ -260,6 +272,7 @@ func mosquitto_auth_acl_check(cUserData unsafe.Pointer, cAccess C.int, cClient *
 	}
 
 	data := (*userData)(cUserData)
+	access := access(cAccess)
 	// get cache data
 	cacheTokenInfo, ok := clientCache[unsafe.Pointer(cClient)]
 	if !ok {
@@ -315,22 +328,21 @@ func mosquitto_auth_acl_check(cUserData unsafe.Pointer, cAccess C.int, cClient *
 	logger.Printf("actions %s\n", actions)
 
 	var b bool
-	switch a := int(cAccess); a {
-	case aclRead:
-		logger.Printf("read")
+	switch access {
+	case read:
 		b = actions["RECEIVE"]
-	case aclWrite:
-		logger.Printf("write")
+	case write:
 		b = actions["PUBLISH"]
 	default:
-		logger.Printf("Unexpected access request %d\n", a)
+		logger.Printf("Unexpected access request %d\n", access)
+		return C.MOSQ_ERR_AUTH
 	}
 	if !b {
-		logger.Println("leave - acl check access denied")
+		logger.Printf("leave - acl check %s denied", access)
 		return C.MOSQ_ERR_PLUGIN_DEFER
 	}
 
-	logger.Println("leave - acl check access granted")
+	logger.Printf("leave - acl check %s granted", access)
 	return C.MOSQ_ERR_SUCCESS
 }
 
