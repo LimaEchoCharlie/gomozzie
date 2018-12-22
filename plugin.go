@@ -1,18 +1,18 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/limaechocharlie/amrest"
-	"net/http"
-	"unsafe"
-	"encoding/json"
-	"strconv"
-	"os"
-	"time"
-	"io/ioutil"
-	"strings"
 	"io"
+	"io/ioutil"
 	"log"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+	"unsafe"
 )
 
 // access describes the type of access to a topic that the client is requesting
@@ -30,8 +30,8 @@ func (a access) String() string {
 }
 
 const (
-	read  access = 0x01		// read from a topic
-	write access = 0x02		// write to a topic
+	read  access = 0x01 // read from a topic
+	write access = 0x02 // write to a topic
 )
 
 type userData struct {
@@ -91,7 +91,7 @@ func initialiseUserData(opts map[string]string) (userData, error) {
 	// check all the required options have been supplied
 	for _, o := range requiredOpts {
 		if _, ok := opts[o]; !ok {
-			return data, fmt.Errorf("missing opt %s", o)
+			return data, fmt.Errorf("missing field %s", o)
 		}
 	}
 
@@ -155,7 +155,7 @@ func initialiseLogger(s string) (l *log.Logger, f *os.File, err error) {
 }
 
 // clearUserData clears the userData struct so that memory can be garbage collected
-func clearUserData(user *userData)  {
+func clearUserData(user *userData) {
 	user.clientCache = nil
 }
 
@@ -172,12 +172,12 @@ func (e statusCodeError) Error() string {
 }
 
 // doRequest sends a http request, checking the response for the expected status code and the body
-func doRequest( client doer, req *http.Request, expectedStatusCode int) (body []byte, err error) {
+func doRequest(client doer, req *http.Request, expectedStatusCode int) (body []byte, err error) {
 	const (
 		retryLimit = 4
 		backOff    = 100 * time.Millisecond
 	)
-	f := func(client doer, req *http.Request, expectedStatusCode int)([]byte, error) {
+	f := func(client doer, req *http.Request, expectedStatusCode int) ([]byte, error) {
 		resp, err := client.Do(req)
 		if err != nil {
 			return nil, err
@@ -196,8 +196,8 @@ func doRequest( client doer, req *http.Request, expectedStatusCode int) (body []
 	}
 
 	for i, b := 0, time.Duration(0); i < retryLimit; i, b = i+1, b+backOff {
-		time.Sleep(b) 	// a zero duration will return immediately
-		body, err = f(client, req , expectedStatusCode)
+		time.Sleep(b) // a zero duration will return immediately
+		body, err = f(client, req, expectedStatusCode)
 		if err == nil {
 			break
 		}
