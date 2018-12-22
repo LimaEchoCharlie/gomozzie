@@ -117,13 +117,17 @@ func initialiseUserData(opts map[string]string) (userData, error) {
 	return data, nil
 }
 
+const (
+	// constants used by the config file to switch log destination
+	destNone   = "none"
+	destFile   = "file"
+	destStdout = "stdout"
+)
+
 // initialiseLogger initialises the logger depending on the fields in the supplied configuration string
+// Defaults to stdout if the input string is empty or unrecognised.
+// Returns an error if logging to a file is requested but fails.
 func initialiseLogger(s string) (l *log.Logger, f *os.File, err error) {
-	const (
-		destNone   = "none"
-		destFile   = "file"
-		destStdout = "stdout"
-	)
 	settings := strings.Fields(s)
 	loggingType := destStdout
 	if len(settings) > 0 {

@@ -1,2 +1,3 @@
 #!/usr/bin/env bash
-go build  -o dist/auth-plug.so -buildmode=c-shared .
+go test
+go build  -o dist/gomozzie.so -buildmode=c-shared .
