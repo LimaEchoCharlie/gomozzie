@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/http/httputil"
 	"os"
 	"strconv"
 	"strings"
@@ -160,45 +161,44 @@ type doer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
-// statusCodeError indicate that an unexpected status code has been returned by the server
-type statusCodeError int
-
-func (e statusCodeError) Error() string {
-	return fmt.Sprintf("received status code %d", e)
+// httpResponseError indicates that an unexpected response has been returned by the server
+type httpResponseError struct {
+	response *http.Response
 }
 
-// doRequest sends a http request, checking the response for the expected status code and the body
-func doRequest(client doer, req *http.Request, expectedStatusCode int) (body []byte, err error) {
-	const (
-		retryLimit = 4
-		backOff    = 100 * time.Millisecond
-	)
-	f := func(client doer, req *http.Request, expectedStatusCode int) ([]byte, error) {
-		resp, err := client.Do(req)
-		if err != nil {
-			return nil, err
-		}
-
-		defer resp.Body.Close()
-		body, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			return nil, err
-		}
-
-		if resp.StatusCode != expectedStatusCode {
-			return body, statusCodeError(resp.StatusCode)
-		}
-		return body, nil
+func (e httpResponseError) Error() string {
+	statusCode := e.response.StatusCode
+	if b, err := httputil.DumpResponse(e.response, true); err == nil {
+		return string(b)
 	}
+	return fmt.Sprintf("received status code %d", statusCode)
+}
 
-	for i, b := 0, time.Duration(0); i < retryLimit; i, b = i+1, b+backOff {
+const (
+	retryLimit = 4
+)
+
+// withBackOff retries the do function with back off until the max retry limit has been reached
+func withBackOff(maxRetry int, do func() (bool, *http.Response, error)) (response *http.Response, err error) {
+	const backOff    = 100 * time.Millisecond
+	retry := true
+	for i, b := 0, time.Duration(0); retry && i < maxRetry; i, b = i+1, b+backOff {
 		time.Sleep(b) // a zero duration will return immediately
-		body, err = f(client, req, expectedStatusCode)
-		if err == nil {
-			break
-		}
+		retry, response, err = do()
 	}
-	return body, err
+	return
+}
+
+// checkResponseStatusCode checks the status code of the response and decides whether a retry is required
+func checkResponseStatusCode(response *http.Response) (bool, error) {
+	switch response.StatusCode {
+	case http.StatusOK:
+		return false, nil
+	case http.StatusInternalServerError, http.StatusServiceUnavailable:
+		return true, httpResponseError{response}
+	default:
+		return false, httpResponseError{response}
+	}
 }
 
 // Checks whether a client is authorised to read from or write to a topic.
@@ -213,13 +213,26 @@ func authorise(httpDo doer, user *userData, access access, client unsafe.Pointer
 	// toDo check token expiry
 
 	// get SSO token
-	authRequest, err := amrest.AuthenticateRequest(user.baseURL, user.adminRealm, user.admin)
+	response, err := withBackOff(retryLimit, func() (bool, *http.Response, error) {
+		request, err := amrest.AuthenticateRequest(user.baseURL, user.adminRealm, user.admin)
+		if err != nil {
+			return true, nil, fmt.Errorf("failed to create a authenticate request, %s", err)
+		}
+		response, err := httpDo.Do(request)
+		if err != nil {
+			return true, response, err
+		}
+		retry, err := checkResponseStatusCode(response)
+		return retry, response, err
+
+	})
 	if err != nil {
-		return false, fmt.Errorf("failed to create a authenticate request, %s", err)
+		return false, fmt.Errorf("admin authenication failed, %s", err)
 	}
-	authBytes, err := doRequest(httpDo, authRequest, http.StatusOK)
+	defer response.Body.Close()
+	authBytes, err := ioutil.ReadAll(response.Body)
 	if err != nil {
-		return false, fmt.Errorf("failed to start a session, %s", err)
+		return false, err
 	}
 
 	var authResponse amrest.AuthenticateResponse
@@ -229,14 +242,27 @@ func authorise(httpDo doer, user *userData, access access, client unsafe.Pointer
 	ssoToken := authResponse.TokenID
 
 	// evaluate policies
-	policies := amrest.NewPolicies([]string{amTopic}, user.application).AddClaims(cacheTokenInfo)
-	evalRequest, err := amrest.PoliciesEvaluateRequest(user.baseURL, user.realm, user.cookieName, ssoToken, policies)
+	response, err = withBackOff(retryLimit, func() (bool, *http.Response, error) {
+		policies := amrest.NewPolicies([]string{amTopic}, user.application).AddClaims(cacheTokenInfo)
+		request, err := amrest.PoliciesEvaluateRequest(user.baseURL, user.realm, user.cookieName, ssoToken, policies)
+		if err != nil {
+			return true, nil, fmt.Errorf("failed to create a policies evaluate request, %s", err)
+		}
+		response, err := httpDo.Do(request)
+		if err != nil {
+			return true, response, err
+		}
+		retry, err := checkResponseStatusCode(response)
+		return retry, response, err
+
+	})
 	if err != nil {
-		return false, fmt.Errorf("failed to create a policies evaluate request, %s", err)
+		return false, fmt.Errorf("policy evaluation failed, %s", err)
 	}
-	evalBytes, err := doRequest(httpDo, evalRequest, http.StatusOK)
+	defer response.Body.Close()
+	evalBytes, err := ioutil.ReadAll(response.Body)
 	if err != nil {
-		return false, fmt.Errorf("failed to evaluate policies, %s", err)
+		return false, err
 	}
 
 	var evaluations []amrest.PolicyEvaluation
@@ -267,14 +293,28 @@ func authenticate(httpDo doer, user *userData, client unsafe.Pointer, username, 
 	if username != "_authn_openid_" {
 		return fmt.Errorf("unsupported authentication, username = %s", username)
 	}
-	// an OAuth2 ID Token is passed in as the password. Check that it is valid.
-	req, err := amrest.OAuth2IDTokenInfoRequest(user.baseURL, user.realm, user.client, password)
-	if err != nil {
-		return fmt.Errorf("failed to create a OAuth2 ID Token verification request, %s", err)
-	}
-	info, err := doRequest(httpDo, req, http.StatusOK)
+	response, err := withBackOff(retryLimit, func() (retry bool, response *http.Response, err error) {
+		// an OAuth2 ID Token is passed in as the password. Check that it is valid.
+		request, err := amrest.OAuth2IDTokenInfoRequest(user.baseURL, user.realm, user.client, password)
+		if err != nil {
+			err = fmt.Errorf("failed to create a OAuth2 ID Token verification request, %s", err)
+			return false, nil, err
+		}
+		response, err = httpDo.Do(request)
+		if err != nil {
+			return true, response, err
+		}
+		retry, err = checkResponseStatusCode(response)
+		return retry, response, err
+	})
 	if err != nil {
 		return fmt.Errorf("OAuth2 ID Token verification failed, %s", err)
+	}
+
+	defer response.Body.Close()
+	info, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		return err
 	}
 	// add token info to cache
 	user.clientCache[client] = info
