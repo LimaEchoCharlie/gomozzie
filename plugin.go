@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/limaechocharlie/amrest"
-	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -129,27 +128,24 @@ const (
 // Returns an error if logging to a file is requested but fails.
 func initialiseLogger(s string) (l *log.Logger, f *os.File, err error) {
 	settings := strings.Fields(s)
-	loggingType := destStdout
+	var w = ioutil.Discard
 	if len(settings) > 0 {
-		loggingType = settings[0]
-	}
-
-	var w io.Writer
-	switch loggingType {
-	case destFile:
-		if len(settings) < 2 {
-			return l, f, fmt.Errorf("file path missing")
+		switch settings[0] {
+		case destFile:
+			if len(settings) < 2 {
+				return l, f, fmt.Errorf("file path missing")
+			}
+			var err error
+			f, err = os.OpenFile(settings[1], os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			if err != nil {
+				return l, f, err
+			}
+			w = f
+		case destStdout:
+			w = os.Stdout
+		default:
+			fmt.Printf("WARNING: unknown debug setting, %s", settings)
 		}
-		var err error
-		f, err = os.OpenFile(settings[1], os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			return l, f, err
-		}
-		w = f
-	case destStdout:
-		w = os.Stdout
-	case destNone:
-		w = ioutil.Discard
 	}
 	return log.New(w, "AUTH_PLUGIN: ", log.LstdFlags|log.Lshortfile), f, nil
 }
@@ -219,16 +215,16 @@ func authorise(httpDo doer, user *userData, access access, client unsafe.Pointer
 	// get SSO token
 	authRequest, err := amrest.AuthenticateRequest(user.baseURL, user.adminRealm, user.admin)
 	if err != nil {
-		return false, fmt.Errorf("failed to create a authenticate request:", err)
+		return false, fmt.Errorf("failed to create a authenticate request, %s", err)
 	}
 	authBytes, err := doRequest(httpDo, authRequest, http.StatusOK)
 	if err != nil {
-		return false, fmt.Errorf("failed to start a session, %s\n", err)
+		return false, fmt.Errorf("failed to start a session, %s", err)
 	}
 
 	var authResponse amrest.AuthenticateResponse
 	if err := json.Unmarshal(authBytes, &authResponse); err != nil {
-		return false, fmt.Errorf("failed to unmarshal SSO token, %s\n", err)
+		return false, fmt.Errorf("failed to unmarshal SSO token, %s", err)
 	}
 	ssoToken := authResponse.TokenID
 
@@ -236,19 +232,19 @@ func authorise(httpDo doer, user *userData, access access, client unsafe.Pointer
 	policies := amrest.NewPolicies([]string{amTopic}, user.application).AddClaims(cacheTokenInfo)
 	evalRequest, err := amrest.PoliciesEvaluateRequest(user.baseURL, user.realm, user.cookieName, ssoToken, policies)
 	if err != nil {
-		return false, fmt.Errorf("failed to create a policies evaluate request:", err)
+		return false, fmt.Errorf("failed to create a policies evaluate request, %s", err)
 	}
 	evalBytes, err := doRequest(httpDo, evalRequest, http.StatusOK)
 	if err != nil {
-		return false, fmt.Errorf("failed to evaluate policies, %s\n", err)
+		return false, fmt.Errorf("failed to evaluate policies, %s", err)
 	}
 
 	var evaluations []amrest.PolicyEvaluation
 	if err := json.Unmarshal(evalBytes, &evaluations); err != nil {
-		return false, fmt.Errorf("failed to unmarshal policies, %s\n", err)
+		return false, fmt.Errorf("failed to unmarshal policies, %s", err)
 	}
 	if len(evaluations) != 1 {
-		return false, fmt.Errorf("expected only one resource; got %d\n", len(evaluations))
+		return false, fmt.Errorf("expected only one resource; got %d", len(evaluations))
 	}
 	actions := evaluations[0].Actions
 
@@ -269,16 +265,16 @@ func authorise(httpDo doer, user *userData, access access, client unsafe.Pointer
  */
 func authenticate(httpDo doer, user *userData, client unsafe.Pointer, username, password string) error {
 	if username != "_authn_openid_" {
-		return fmt.Errorf("unsupported authentication, username = %s\n", username)
+		return fmt.Errorf("unsupported authentication, username = %s", username)
 	}
 	// an OAuth2 ID Token is passed in as the password. Check that it is valid.
 	req, err := amrest.OAuth2IDTokenInfoRequest(user.baseURL, user.realm, user.client, password)
 	if err != nil {
-		return fmt.Errorf("failed to create a OAuth2 ID Token verification request:", err)
+		return fmt.Errorf("failed to create a OAuth2 ID Token verification request, %s", err)
 	}
 	info, err := doRequest(httpDo, req, http.StatusOK)
 	if err != nil {
-		return fmt.Errorf("OAuth2 ID Token verification failed:", err)
+		return fmt.Errorf("OAuth2 ID Token verification failed, %s", err)
 	}
 	// add token info to cache
 	user.clientCache[client] = info

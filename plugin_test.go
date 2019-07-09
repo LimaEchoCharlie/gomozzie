@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io/ioutil"
 	"os"
 	"reflect"
 	"testing"
@@ -29,8 +30,6 @@ func Test_initialiseLoggerSuccessSimple(t *testing.T) {
 	tests := []struct {
 		name, input string
 	}{
-		{name: "empty", input: ""},
-		{name: "oddName", input: "boom"},
 		{name: "none", input: destNone},
 		{name: "stdout", input: destStdout},
 		{name: "leadingWhitespace", input: fmt.Sprintf("\t %s", destStdout)},
@@ -41,6 +40,28 @@ func Test_initialiseLoggerSuccessSimple(t *testing.T) {
 			_, _, err := initialiseLogger(tt.input)
 			if err != nil {
 				t.Fatalf("Unexpected error %s", err)
+			}
+		})
+	}
+}
+
+func Test_initialiseLoggerDefaultToDiscard(t *testing.T) {
+	tests := []struct {
+		name, input string
+	}{
+		{name: "empty", input: ""},
+		{name: "oddName", input: "boom"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l, _, err := initialiseLogger(tt.input)
+			if err != nil {
+				t.Fatalf("Unexpected error %s", err)
+			}
+			w := l.Writer()
+			if w != ioutil.Discard {
+				t.Fatalf("Writing to %s instead of discarding", w)
 			}
 		})
 	}
