@@ -118,13 +118,16 @@ func mosquitto_auth_unpwd_check(cUserData unsafe.Pointer, cClient *C.const_mosqu
 	password := goStringFromConstant(cPassword)
 	logger.Printf("u: %s, p: %s\n", username, password)
 
-	err := authenticate(http.DefaultClient, (*userData)(cUserData), unsafe.Pointer(cClient), username, password)
+	authorised, err := authenticate(http.DefaultClient, (*userData)(cUserData), unsafe.Pointer(cClient), username, password)
 	if err != nil {
 		logger.Printf("leave - unpwd check error, %s", err)
 		return C.MOSQ_ERR_AUTH
 	}
 
-	logger.Println("leave - unpwd check successful")
+	logger.Printf("leave - unpwd check successful, user authorised? %v", authorised)
+	if !authorised {
+		return C.MOSQ_ERR_PLUGIN_DEFER
+	}
 	return C.MOSQ_ERR_SUCCESS
 }
 

@@ -35,21 +35,9 @@ const (
 )
 
 type userData struct {
-	// configuration data
-	baseURL     string
-	realm       string
-	cookieName  string
-	application string
-	client      amrest.User
-	admin       amrest.User
-	adminRealm  string
+	client      amrest.OAuth2Client
 	// clientCache to store client data between API calls. The client pointer value is used as the key.
-	clientCache map[unsafe.Pointer][]byte
-}
-
-func (u userData) String() string {
-	return fmt.Sprintf("{ baseURL: %s, realm: %s, cookieName: %s, application: %s, client: %s, admin: %s, adminRealm: %s}",
-		u.baseURL, u.realm, u.cookieName, u.application, u.client, u.admin, u.adminRealm)
+	clientCache map[unsafe.Pointer] amrest.IntrospectionResponse
 }
 
 const (
@@ -100,20 +88,12 @@ func initialiseUserData(opts map[string]string) (userData, error) {
 	if useTLS, err := strconv.ParseBool(opts[optUseTLS]); err == nil && useTLS {
 		protocol = "https"
 	}
+	baseURL := fmt.Sprintf("%s://%s:%s%s", protocol, opts[optHost], opts[optPort], opts[optPath])
 
-	// copy over user data values
-	data.baseURL = fmt.Sprintf("%s://%s:%s%s", protocol, opts[optHost], opts[optPort], opts[optPath])
-	data.realm = opts[optRealm]
-	data.cookieName = opts[optCookieName]
-	data.application = opts[optApplication]
-	data.client.Username = opts[optClientUsername]
-	data.client.Password = opts[optClientPassword]
-	data.admin.Username = opts[optAgentUsername]
-	data.admin.Password = opts[optAgentPassword]
-	data.adminRealm = opts[optAgentRealm]
-
+	// create OAuth 2 client
+	data.client = amrest.NewOAuth2ClientWithSecret(baseURL, opts[optRealm], opts[optClientUsername], opts[optClientPassword])
 	// make client cache
-	data.clientCache = make(map[unsafe.Pointer][]byte)
+	data.clientCache = make(map[unsafe.Pointer]amrest.IntrospectionResponse)
 	return data, nil
 }
 
@@ -204,98 +184,28 @@ func checkResponseStatusCode(response *http.Response) (bool, error) {
 // Checks whether a client is authorised to read from or write to a topic.
 func authorise(httpDo doer, user *userData, access access, client unsafe.Pointer, topic string) (bool, error) {
 	// get cache data
-	cacheTokenInfo, ok := user.clientCache[client]
+	introspection, ok := user.clientCache[client]
 	if !ok {
 		return false, fmt.Errorf("client %p is missing from cache\n", client)
 	}
-	// toDo utility format function for mqtt resource strings
-	amTopic := "mqtt+topic://" + topic
-	// toDo check token expiry
 
-	// get SSO token
-	response, err := withBackOff(retryLimit, func() (bool, *http.Response, error) {
-		request, err := amrest.AuthenticateRequest(user.baseURL, user.adminRealm, user.admin)
-		if err != nil {
-			return true, nil, fmt.Errorf("failed to create a authenticate request, %s", err)
-		}
-		response, err := httpDo.Do(request)
-		if err != nil {
-			return true, response, err
-		}
-		retry, err := checkResponseStatusCode(response)
-		return retry, response, err
-
-	})
-	if err != nil {
-		return false, fmt.Errorf("admin authenication failed, %s", err)
+	// check whether the token has expired
+	expiration := time.Unix(introspection.Exp, 0)
+	logger.Println(expiration)
+	if time.Now().After(expiration) {
+		logger.Println("Token has expired")
+		return false, nil
 	}
-	defer response.Body.Close()
-	authBytes, err := ioutil.ReadAll(response.Body)
-	if err != nil {
-		return false, err
-	}
-
-	var authResponse amrest.AuthenticateResponse
-	if err := json.Unmarshal(authBytes, &authResponse); err != nil {
-		return false, fmt.Errorf("failed to unmarshal SSO token, %s", err)
-	}
-	ssoToken := authResponse.TokenID
-
-	// evaluate policies
-	response, err = withBackOff(retryLimit, func() (bool, *http.Response, error) {
-		policies := amrest.NewPolicies([]string{amTopic}, user.application).AddClaims(cacheTokenInfo)
-		request, err := amrest.PoliciesEvaluateRequest(user.baseURL, user.realm, user.cookieName, ssoToken, policies)
-		if err != nil {
-			return true, nil, fmt.Errorf("failed to create a policies evaluate request, %s", err)
-		}
-		response, err := httpDo.Do(request)
-		if err != nil {
-			return true, response, err
-		}
-		retry, err := checkResponseStatusCode(response)
-		return retry, response, err
-
-	})
-	if err != nil {
-		return false, fmt.Errorf("policy evaluation failed, %s", err)
-	}
-	defer response.Body.Close()
-	evalBytes, err := ioutil.ReadAll(response.Body)
-	if err != nil {
-		return false, err
-	}
-
-	var evaluations []amrest.PolicyEvaluation
-	if err := json.Unmarshal(evalBytes, &evaluations); err != nil {
-		return false, fmt.Errorf("failed to unmarshal policies, %s", err)
-	}
-	if len(evaluations) != 1 {
-		return false, fmt.Errorf("expected only one resource; got %d", len(evaluations))
-	}
-	actions := evaluations[0].Actions
-
-	var b bool
-	switch access {
-	case read:
-		b = actions["RECEIVE"]
-	case write:
-		b = actions["PUBLISH"]
-	default:
-		return false, fmt.Errorf("Unexpected access request %d\n", access)
-	}
-	return b, nil
+	return true, nil
 }
 
 /*
  * authenticate the client by checking the supplied username and password.
+ * an OAuth2 Access Token is passed in as the password.
  */
-func authenticate(httpDo doer, user *userData, client unsafe.Pointer, username, password string) error {
-	if username != "_authn_openid_" {
-		return fmt.Errorf("unsupported authentication, username = %s", username)
-	}
+func authenticate(httpDo doer, user *userData, client unsafe.Pointer, username, password string) (bool, error) {
 	response, err := withBackOff(retryLimit, func() (retry bool, response *http.Response, err error) {
-		// an OAuth2 ID Token is passed in as the password. Check that it is valid.
-		request, err := amrest.OAuth2IDTokenInfoRequest(user.baseURL, user.realm, user.client, password)
+		request, err := user.client.Introspect(password)
 		if err != nil {
 			err = fmt.Errorf("failed to create a OAuth2 ID Token verification request, %s", err)
 			return false, nil, err
@@ -308,16 +218,27 @@ func authenticate(httpDo doer, user *userData, client unsafe.Pointer, username, 
 		return retry, response, err
 	})
 	if err != nil {
-		return fmt.Errorf("OAuth2 ID Token verification failed, %s", err)
+		return false, fmt.Errorf("OAuth2 ID Token verification failed, %s", err)
 	}
 
 	defer response.Body.Close()
-	info, err := ioutil.ReadAll(response.Body)
+	introspectionBytes, err := ioutil.ReadAll(response.Body)
 	if err != nil {
-		return err
+		return false, err
 	}
-	// add token info to cache
-	user.clientCache[client] = info
 
-	return nil
+	var introspection amrest.IntrospectionResponse
+	if err := json.Unmarshal(introspectionBytes, &introspection); err != nil {
+		return false, err
+	}
+
+	if !introspection.Active {
+		logger.Println("Introspection indicates that the token is inactive")
+		return false, nil
+	}
+
+	// add token introspectionBytes to cache
+	user.clientCache[client] = introspection
+
+	return true, nil
 }
