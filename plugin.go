@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 	"unsafe"
@@ -35,42 +34,44 @@ const (
 )
 
 type userData struct {
-	client      amrest.OAuth2Client
+	endpoint     string
+	clientID     string
+	clientSecret string
 	// clientCache to store client data between API calls. The client pointer value is used as the key.
-	clientCache map[unsafe.Pointer] amrest.IntrospectionResponse
+	clientCache map[unsafe.Pointer]amrest.IntrospectionResponse
+}
+
+// Introspect creates a request to introspect the given OAuth2 token
+func (u userData) Introspect(token string) (*http.Request, error) {
+	req, err := http.NewRequest(http.MethodPost,
+		u.endpoint,
+		strings.NewReader(fmt.Sprintf("token=%s", token)))
+
+	if err != nil {
+		return nil, err
+	}
+
+	req.SetBasicAuth(u.clientID, u.clientSecret)
+	req.Header.Set("Cache-Control", "no-cache")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	return req, nil
 }
 
 const (
 	optPrefix = "openam_"
 
-	optHost           = optPrefix + "host"
-	optPort           = optPrefix + "port"
-	optPath           = optPrefix + "path"
-	optRealm          = optPrefix + "realm"
-	optCookieName     = optPrefix + "cookiename"
-	optApplication    = optPrefix + "application"
-	optClientUsername = optPrefix + "client_id"
-	optClientPassword = optPrefix + "client_secret"
-	optAgentUsername  = optPrefix + "agent_user"
-	optAgentPassword  = optPrefix + "agent_password"
-	optAgentRealm     = optPrefix + "agent_realm"
+	optEndpoint     = optPrefix + "endpoint"
+	optClientID     = optPrefix + "client_id"
+	optClientSecret = optPrefix + "client_secret"
 	// optional
-	optUseTLS  = optPrefix + "use_tls"
 	optLogDest = optPrefix + "log_dest"
 )
 
 var requiredOpts = [...]string{
-	optHost,
-	optPort,
-	optPath,
-	optRealm,
-	optCookieName,
-	optApplication,
-	optClientUsername,
-	optClientPassword,
-	optAgentUsername,
-	optAgentPassword,
-	optAgentRealm,
+	optEndpoint,
+	optClientID,
+	optClientSecret,
 }
 
 // initialiseUserData initialises the data shared between plugin calls
@@ -83,15 +84,11 @@ func initialiseUserData(opts map[string]string) (userData, error) {
 		}
 	}
 
-	// decide on protocol
-	protocol := "http"
-	if useTLS, err := strconv.ParseBool(opts[optUseTLS]); err == nil && useTLS {
-		protocol = "https"
-	}
-	baseURL := fmt.Sprintf("%s://%s:%s%s", protocol, opts[optHost], opts[optPort], opts[optPath])
+	// copy over user data values
+	data.endpoint = opts[optEndpoint]
+	data.clientID = opts[optClientID]
+	data.clientSecret = opts[optClientSecret]
 
-	// create OAuth 2 client
-	data.client = amrest.NewOAuth2ClientWithSecret(baseURL, opts[optRealm], opts[optClientUsername], opts[optClientPassword])
 	// make client cache
 	data.clientCache = make(map[unsafe.Pointer]amrest.IntrospectionResponse)
 	return data, nil
@@ -160,7 +157,7 @@ const (
 
 // withBackOff retries the do function with back off until the max retry limit has been reached
 func withBackOff(maxRetry int, do func() (bool, *http.Response, error)) (response *http.Response, err error) {
-	const backOff    = 100 * time.Millisecond
+	const backOff = 100 * time.Millisecond
 	retry := true
 	for i, b := 0, time.Duration(0); retry && i < maxRetry; i, b = i+1, b+backOff {
 		time.Sleep(b) // a zero duration will return immediately
@@ -205,7 +202,7 @@ func authorise(httpDo doer, user *userData, access access, client unsafe.Pointer
  */
 func authenticate(httpDo doer, user *userData, client unsafe.Pointer, username, password string) (bool, error) {
 	response, err := withBackOff(retryLimit, func() (retry bool, response *http.Response, err error) {
-		request, err := user.client.Introspect(password)
+		request, err := user.Introspect(password)
 		if err != nil {
 			err = fmt.Errorf("failed to create a OAuth2 ID Token verification request, %s", err)
 			return false, nil, err

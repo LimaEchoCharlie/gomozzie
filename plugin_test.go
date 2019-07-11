@@ -93,34 +93,18 @@ func Test_initialiseLoggerSuccessFile(t *testing.T) {
 // returns a map containing all the 'required' options with some demo values
 func requiredOptions() map[string]string {
 	return map[string]string{
-		optHost:           "openam.example.com",
-		optPort:           "8443",
-		optPath:           "/openam",
-		optRealm:          "/iot",
-		optCookieName:     "iPlanetDirectoryPro",
-		optApplication:    "iot-devices",
-		optClientUsername: "client_id",
-		optClientPassword: "changeit",
-		optAgentUsername:  "agent_id",
-		optAgentPassword:  "changeit",
-		optAgentRealm:     "/",
+		optEndpoint:     "http://am.iec.com:8080/openam/oauth2/realms/root/realms/edge/introspect",
+		optClientID:     "client_id",
+		optClientSecret: "changeit",
 	}
 }
 func Test_initialiseUserDataMissingOpt(t *testing.T) {
 	tests := []struct {
 		missingOpt string
 	}{
-		{missingOpt: optHost},
-		{missingOpt: optPort},
-		{missingOpt: optPath},
-		{missingOpt: optRealm},
-		{missingOpt: optCookieName},
-		{missingOpt: optApplication},
-		{missingOpt: optClientUsername},
-		{missingOpt: optClientPassword},
-		{missingOpt: optAgentUsername},
-		{missingOpt: optAgentPassword},
-		{missingOpt: optAgentRealm},
+		{missingOpt: optEndpoint},
+		{missingOpt: optClientID},
+		{missingOpt: optClientSecret},
 	}
 
 	for _, tt := range tests {
@@ -140,11 +124,9 @@ func Test_initialiseUserDataCheckMappingStrings(t *testing.T) {
 	tests := []struct {
 		field, expectVal string
 	}{
-		{field: "baseURL", expectVal: fmt.Sprintf("http://%s:%s%s", testOpts[optHost], testOpts[optPort], testOpts[optPath])},
-		{field: "realm", expectVal: testOpts[optRealm]},
-		{field: "cookieName", expectVal: testOpts[optCookieName]},
-		{field: "application", expectVal: testOpts[optApplication]},
-		{field: "adminRealm", expectVal: testOpts[optAgentRealm]},
+		{field: "endpoint", expectVal: testOpts[optEndpoint]},
+		{field: "clientID", expectVal: testOpts[optClientID]},
+		{field: "clientSecret", expectVal: testOpts[optClientSecret]},
 	}
 
 	for _, tt := range tests {

@@ -15,18 +15,9 @@ Options `auth_opt_` are automatically handed to the plugin. The following option
 | Option            |  Mandatory  |
 | ---------------------| :---------: |
 |  |            
-| openam_host           |      Y      | 
-| openam_port           |      Y      | 
-| openam_path           |      Y      |         
-| openam_realm          |      Y      |           
-| openam_cookiename     |      Y      |         
-| openam_client_id      |      Y      |       
-| openam_client_secret  |      Y      | 
-| openam_application    |      Y      |
-| openam_agent_realm    |      Y      |
-| openam_agent_user     |      Y      |
-| openam_agent_password |      Y      |
-| openam_use_tls .      | .    N .    |
+| openam_endpoint       |      Y      |
+| openam_client_id      |      Y      |
+| openam_client_secret  |      Y      |
 | openam_log_dest .     | .    N .    |
 
 ## Disclaimer
