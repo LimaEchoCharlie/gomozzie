@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/limaechocharlie/amrest"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -12,6 +11,12 @@ import (
 	"strings"
 	"time"
 	"unsafe"
+	"regexp"
+)
+
+var (
+	subscribeRE  = regexp.MustCompile(`mqtt:subscribe`)
+	publishRE = regexp.MustCompile(`mqtt:publish`)
 )
 
 // access describes the type of access to a topic that the client is requesting
@@ -23,22 +28,33 @@ func (a access) String() string {
 		return "read"
 	case write:
 		return "write"
+	case subscribe:
+		return "subscribe"
 	default:
 		return "unknown"
 	}
 }
 
 const (
-	read  access = 0x01 // read from a topic
-	write access = 0x02 // write to a topic
+	read      access = 0x01 // read from a topic
+	write     access = 0x02 // write to a topic
+	subscribe access = 0x04 // subscribe to a topic
 )
 
+// clientAuthorisation contains the authorisation granted to the client
+type clientAuthorisation struct {
+	publish bool
+	subscribe bool
+	expiration time.Time
+}
+
+// userData contains the persistent data that is kept between plugin calls
 type userData struct {
 	endpoint     string
 	clientID     string
 	clientSecret string
 	// clientCache to store client data between API calls. The client pointer value is used as the key.
-	clientCache map[unsafe.Pointer]amrest.IntrospectionResponse
+	clientCache map[unsafe.Pointer]clientAuthorisation
 }
 
 // Introspect creates a request to introspect the given OAuth2 token
@@ -90,7 +106,7 @@ func initialiseUserData(opts map[string]string) (userData, error) {
 	data.clientSecret = opts[optClientSecret]
 
 	// make client cache
-	data.clientCache = make(map[unsafe.Pointer]amrest.IntrospectionResponse)
+	data.clientCache = make(map[unsafe.Pointer]clientAuthorisation)
 	return data, nil
 }
 
@@ -178,22 +194,33 @@ func checkResponseStatusCode(response *http.Response) (bool, error) {
 	}
 }
 
-// Checks whether a client is authorised to read from or write to a topic.
+// Checks whether a client is authorised to publish or subscribe to a topic.
 func authorise(httpDo doer, user *userData, access access, client unsafe.Pointer, topic string) (bool, error) {
+	if access == read {
+		// authorisation is controlled at the subscribe stage
+		return true, nil
+	}
 	// get cache data
-	introspection, ok := user.clientCache[client]
+	authData, ok := user.clientCache[client]
 	if !ok {
 		return false, fmt.Errorf("client %p is missing from cache\n", client)
 	}
 
 	// check whether the token has expired
-	expiration := time.Unix(introspection.Exp, 0)
-	logger.Println(expiration)
-	if time.Now().After(expiration) {
+	logger.Println(authData)
+	if time.Now().After(authData.expiration) {
 		logger.Println("Token has expired")
 		return false, nil
 	}
-	return true, nil
+
+	switch access {
+	case subscribe:
+		return authData.subscribe, nil
+	case write:
+		return authData.publish, nil
+	default:
+		return false, fmt.Errorf("Unexpected access request %d\n", access)
+	}
 }
 
 /*
@@ -224,7 +251,11 @@ func authenticate(httpDo doer, user *userData, client unsafe.Pointer, username, 
 		return false, err
 	}
 
-	var introspection amrest.IntrospectionResponse
+	var introspection struct {
+		Active bool   `json:"active"`
+		Scope  string `json:"scope"`
+		Exp    int64  `json:"exp"`
+	}
 	if err := json.Unmarshal(introspectionBytes, &introspection); err != nil {
 		return false, err
 	}
@@ -234,8 +265,19 @@ func authenticate(httpDo doer, user *userData, client unsafe.Pointer, username, 
 		return false, nil
 	}
 
-	// add token introspectionBytes to cache
-	user.clientCache[client] = introspection
+	publish := publishRE.MatchString(introspection.Scope)
+	subscribe := subscribeRE.MatchString(introspection.Scope)
+	if !publish && !subscribe {
+		logger.Println("Not authorised to publish or subscribe")
+		return false, nil
+	}
+
+	// add client authorisation data to cache
+	user.clientCache[client] = clientAuthorisation{
+		publish:publish,
+		subscribe:subscribe,
+		expiration: time.Unix(introspection.Exp, 0),
+	}
 
 	return true, nil
 }
