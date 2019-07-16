@@ -203,7 +203,8 @@ func authorise(httpDo doer, user *userData, access access, client unsafe.Pointer
 	// get cache data
 	authData, ok := user.clientCache[client]
 	if !ok {
-		return false, fmt.Errorf("client %p is missing from cache\n", client)
+		// the user will not be in the cache if it was authenticated by mosquitto or another plugin
+		return false, nil
 	}
 
 	// check whether the token has expired
