@@ -15,8 +15,8 @@ import (
 )
 
 var (
-	subscribeRE  = regexp.MustCompile(`mqtt:subscribe`)
-	publishRE = regexp.MustCompile(`mqtt:publish`)
+	readRE  = regexp.MustCompile(`mqtt:read:([\\p{L}/\*]+)`)
+	writeRE = regexp.MustCompile(`mqtt:write:([\\p{L}/\*]+)`)
 )
 
 // access describes the type of access to a topic that the client is requesting
@@ -43,8 +43,8 @@ const (
 
 // clientAuthorisation contains the authorisation granted to the client
 type clientAuthorisation struct {
-	publish bool
-	subscribe bool
+	write      string
+	read       string
 	expiration time.Time
 }
 
@@ -194,12 +194,8 @@ func checkResponseStatusCode(response *http.Response) (bool, error) {
 	}
 }
 
-// Checks whether a client is authorised to publish or subscribe to a topic.
+// Checks whether a client is authorised to write or read to a topic.
 func authorise(httpDo doer, user *userData, access access, client unsafe.Pointer, topic string) (bool, error) {
-	if access == read {
-		// authorisation is controlled at the subscribe stage
-		return true, nil
-	}
 	// get cache data
 	authData, ok := user.clientCache[client]
 	if !ok {
@@ -214,14 +210,26 @@ func authorise(httpDo doer, user *userData, access access, client unsafe.Pointer
 		return false, nil
 	}
 
+	allow := false
 	switch access {
-	case subscribe:
-		return authData.subscribe, nil
+	case subscribe, read:
+		allow = matchTopic(authData.read, topic)
 	case write:
-		return authData.publish, nil
+		allow = matchTopic(authData.write, topic)
 	default:
 		return false, fmt.Errorf("Unexpected access request %d\n", access)
 	}
+	return allow, nil
+}
+
+// parseFilter parses the MQTT topic filter from the scopes
+// Assumes that the filter will be found in the the first capturing group of the regexp if the entire expression matches
+func parseFilter(re *regexp.Regexp, scope string) string  {
+	m := re.FindStringSubmatch(scope)
+	if len(m) < 2 {
+		return ""
+	}
+	return m[1]
 }
 
 /*
@@ -266,17 +274,17 @@ func authenticate(httpDo doer, user *userData, client unsafe.Pointer, username, 
 		return false, nil
 	}
 
-	publish := publishRE.MatchString(introspection.Scope)
-	subscribe := subscribeRE.MatchString(introspection.Scope)
-	if !publish && !subscribe {
-		logger.Println("Not authorised to publish or subscribe")
+	write := parseFilter(writeRE, introspection.Scope)
+	read := parseFilter(readRE, introspection.Scope)
+	if write == "" && read == "" {
+		logger.Println("Not authorised to write or read")
 		return false, nil
 	}
 
 	// add client authorisation data to cache
 	user.clientCache[client] = clientAuthorisation{
-		publish:publish,
-		subscribe:subscribe,
+		write:      write,
+		read:       read,
 		expiration: time.Unix(introspection.Exp, 0),
 	}
 
