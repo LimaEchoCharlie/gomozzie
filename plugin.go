@@ -15,8 +15,8 @@ import (
 )
 
 var (
-	readRE  = regexp.MustCompile(`mqtt:read:([\\p{L}/\*]+)`)
-	writeRE = regexp.MustCompile(`mqtt:write:([\\p{L}/\*]+)`)
+	readRE  = regexp.MustCompile(`mqtt:read:([\\p{L}/#\+]+)`)
+	writeRE = regexp.MustCompile(`mqtt:write:([\\p{L}/#\+]+)`)
 )
 
 // access describes the type of access to a topic that the client is requesting
